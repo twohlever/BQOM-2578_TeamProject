@@ -1,0 +1,161 @@
+---
+title: "County Based Opportunites for Children"
+subtitle: "BQOM 2578 | Data Mining"
+date: "11/04/2025"
+date-format: "full"
+author: "Anthony Pulleo, Hannah Shernisky, Theresa Wohlever"
+editor: source
+format:
+  pdf:
+    toc: true
+    toc-depth: 2
+    number-sections: false
+    mainfont: "Georgia"
+    sansfont: "Avenir"
+    monofont: "Menlo"
+    monofontoptions: "Scale=0.6"
+    mathfont: "STIX Two Math"
+    pdf-engine: xelatex
+---
+
+# Executive Summary
+# Data Preparation
+
+The Child Opportunity Index (COI) measures and maps the quality of resources and conditions like these that matter for children's healthy development in the neighborhoods where they live. 
+
+```{r}
+#| label: LoadPackages
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+# Clean up the environment before running
+rm(list = ls())
+
+# library(caTools)
+# library(ROCR)
+library(caret)
+library(tidyverse)
+library("tidyr") #pivot_longer
+library(corrplot)
+library(tidyverse)
+# library("lm.beta")
+library(rpart)
+library(rpart.plot)
+library(knitr)
+
+
+library(data.table)
+library(rstudioapi)
+
+get_current_file_path <- function() {
+  if (!is.null(sys.frames()[[1]]$ofile)) return(normalizePath(sys.frames()[[1]]$ofile))
+  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable())
+    return(normalizePath(rstudioapi::getSourceEditorContext()$path))
+  if (requireNamespace("knitr", quietly = TRUE))
+    return(normalizePath(knitr::current_input()))
+  return(getwd())
+}
+
+
+working_directory <- dirname(get_current_file_path())
+setwd(working_directory)
+
+
+CSV_base_censusTracts_filename <- "AveChildOppScore_censusTracts_data"
+CSV_IN_censusTracts_FILE <- paste(working_directory, "/data_raw/data_COI/", CSV_base_censusTracts_filename, ".csv", sep = "")
+CSV_OUT_censusTracts_FILE <- paste(working_directory, "/processed_data/", CSV_base_censusTracts_filename, "_processed.csv", sep = "")
+
+CSV_base_OverallIndex_filename <- "ChildOppScore_OverallIndex_data"
+CSV_IN_OverallIndex_FILE <- paste(working_directory, "/data_raw/data_COI/", CSV_base_OverallIndex_filename, ".csv", sep = "")
+CSV_OUT_OverallIndex_FILE <- paste(working_directory,  "/processed_data/", CSV_base_OverallIndex_filename, "_processed.csv", sep = "")
+
+CSV_base_OppLevel_filename <- "PctChildOpportunityLevel_data"
+CSV_IN_OppLevel_FILE <- paste(working_directory, "/data_raw/data_COI/", CSV_base_OppLevel_filename, ".csv", sep = "")
+CSV_OUT_OppLevel_FILE <- paste(working_directory,  "/processed_data/", CSV_base_OppLevel_filename, "_processed.csv", sep = "")
+
+
+Rdata_base_mhcld_puf_filename <- "mhcld_puf_2023"
+Rdata_IN_mhcld_puf_FILE <- paste(working_directory, "/data_raw/data_MH-CLD/", Rdata_base_mhcld_puf_filename , ".rdata", sep = "")
+CSV_OUT_mhcld_puf_FILE <- paste(working_directory,  "/processed_data/", Rdata_base_mhcld_puf_filename , "_processed.csv", sep = "")
+
+```
+
+
+
+## Importing Data, Cleaning, & Wrangling
+
+```{r}
+#| label: ImportData
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+df_censusTracts <- data.table(read.csv(CSV_IN_censusTracts_FILE, stringsAsFactors = TRUE)) 
+df_OverallIndex <- data.table(read.csv(CSV_IN_OverallIndex_FILE, stringsAsFactors = TRUE)) 
+df_OppLevel <- data.table(read.csv(CSV_IN_OppLevel_FILE, stringsAsFactors = TRUE)) 
+
+load(Rdata_IN_mhcld_puf_FILE) ## loads dataframe "MHCLD_PUF_2023"
+df_mhcld_puf <- data.table(MHCLD_PUF_2023)
+rm(MHCLD_PUF_2023)
+gc()
+
+
+#
+## Combine  county level data
+#
+df <- df_censusTracts
+df <- merge(df, df_OverallIndex, by.x = "county_fips", by.y = "county_fips")
+df <- merge(df, df_OppLevel, by.x = "county_fips", by.y = "county_fips") ## Error: vector memory limit of 16.0 Gb reached, see mem.maxVSize()
+df <- merge(df, df_mhcld_puf, by.x = "county_fips", by.y = "county_fips")
+df_allJoined <- df ## Save the state of the merged data frame before manipulation
+
+
+
+#
+# CLEAN UP
+#
+
+
+# Remove formatting from character strings like commas or currency symbols
+df <- df %>%
+  mutate(across(.cols = all_of(Cols2Numeric), 
+    ~ as.numeric(gsub("[^0-9.]", "", as.character(.)))))
+df <- df %>%
+  mutate(across(.cols = all_of(Cols2Numeric),
+    ~ as.numeric(.)
+  ))
+
+
+
+## Convert Columns with Yes/No values to 0/1 Values
+YesNo2Numeric <- df_allJoined  %>%
+   select(where(~ any(str_detect(as.character(.), regex("yes", ignore_case = TRUE)), na.rm = TRUE))) %>%
+   names()
+df <- df %>%
+  mutate(across(.cols = all_of(YesNo2Numeric),
+    ~ as.numeric(factor(.,
+      levels = c("No", "Yes"))) - 1
+  ))
+
+
+## Convert other columns with strings to numbers
+Cols2Factors <- names(df)[sapply(df, is.character)]
+df[Cols2Factors] <- lapply(df[Cols2Factors], function(x) as.integer(as.factor(x)))
+
+
+
+
+```
+
+
+# References
+
+
+https://www.diversitydatakids.org/research-library/child-opportunity-index-30-2023-county-data
+
+
+https://www.diversitydatakids.org/research-library/research-brief/what-child-opportunity
+
