@@ -76,9 +76,9 @@ CSV_IN_OppLevel_FILE <- paste(working_directory, "/data_raw/data_COI/", CSV_base
 CSV_OUT_OppLevel_FILE <- paste(working_directory,  "/processed_data/", CSV_base_OppLevel_filename, "_processed.csv", sep = "")
 
 
-Rdata_base_mhcld_puf_filename <- "mhcld_puf_2023"
-Rdata_IN_mhcld_puf_FILE <- paste(working_directory, "/data_raw/data_MH-CLD/", Rdata_base_mhcld_puf_filename , ".rdata", sep = "")
-CSV_OUT_mhcld_puf_FILE <- paste(working_directory,  "/processed_data/", Rdata_base_mhcld_puf_filename , "_processed.csv", sep = "")
+#Rdata_base_mhcld_puf_filename <- "mhcld_puf_2023"
+#Rdata_IN_mhcld_puf_FILE <- paste(working_directory, "/data_raw/data_MH-CLD/", Rdata_base_mhcld_puf_filename , ".rdata", sep = "")
+#CSV_OUT_mhcld_puf_FILE <- paste(working_directory,  "/processed_data/", Rdata_base_mhcld_puf_filename , "_processed.csv", sep = "")
 
 ```
 
@@ -97,11 +97,26 @@ df_censusTracts <- data.table(read.csv(CSV_IN_censusTracts_FILE, stringsAsFactor
 df_OverallIndex <- data.table(read.csv(CSV_IN_OverallIndex_FILE, stringsAsFactors = TRUE)) 
 df_OppLevel <- data.table(read.csv(CSV_IN_OppLevel_FILE, stringsAsFactors = TRUE)) 
 
-load(Rdata_IN_mhcld_puf_FILE) ## loads dataframe "MHCLD_PUF_2023"
-df_mhcld_puf <- data.table(MHCLD_PUF_2023)
-rm(MHCLD_PUF_2023)
-gc()
+#load(Rdata_IN_mhcld_puf_FILE) ## loads dataframe "MHCLD_PUF_2023"
+#df_mhcld_puf <- data.table(MHCLD_PUF_2023)
+#rm(MHCLD_PUF_2023)
+#gc()
+```
 
+```{r}
+##Creating a new dataset that aggregates just the CensusTract (AveChildOppScore) at the county-year level
+df_censusTracts_aggregated <- df_censusTracts %>% select(county_fips,year,pop,r_COI_nat) %>% group_by(county_fips,year) %>% summarize(pop = sum(pop),r_COI_nat=mean(r_COI_nat))
+
+df_censusTracts_aggregated$county_name <- df_censusTracts$county_name[
+  match(df_censusTracts_aggregated$county_fips, df_censusTracts$county_fips)
+]
+
+df_censusTracts_aggregated$state_name <- df_censusTracts$state_name[
+  match(df_censusTracts_aggregated$county_fips, df_censusTracts$county_fips)
+]
+
+df_censusTracts_aggregated %>% drop_na()
+```
 
 #
 ## Combine  county level data
