@@ -19,9 +19,10 @@ format:
 ---
 
 # Executive Summary
+
 # Data Preparation
 
-The Child Opportunity Index (COI) measures and maps the quality of resources and conditions like these that matter for children's healthy development in the neighborhoods where they live. 
+The Child Opportunity Index (COI) measures and maps the quality of resources and conditions like these that matter for children's healthy development in the neighborhoods where they live.
 
 ```{r}
 #| label: LoadPackages
@@ -33,6 +34,11 @@ The Child Opportunity Index (COI) measures and maps the quality of resources and
 # Clean up the environment before running
 rm(list = ls())
 
+#Install Packages
+#install.packages("readxl")
+#install.packages("tidycensus")
+
+#Establish Libraries
 # library(caTools)
 # library(ROCR)
 library(caret)
@@ -44,10 +50,16 @@ library(tidyverse)
 library(rpart)
 library(rpart.plot)
 library(knitr)
-
-
+library(ggplot2)
 library(data.table)
 library(rstudioapi)
+library(readxl)
+library(tidycensus)
+library(randomForest)
+library(patchwork)
+library(caTools)
+library(neuralnet)
+
 
 get_current_file_path <- function() {
   if (!is.null(sys.frames()[[1]]$ofile)) return(normalizePath(sys.frames()[[1]]$ofile))
@@ -82,8 +94,6 @@ CSV_OUT_mhcld_puf_FILE <- paste(working_directory,  "/processed_data/", Rdata_ba
 
 ```
 
-
-
 ## Importing Data, Cleaning, & Wrangling
 
 ```{r}
@@ -94,20 +104,315 @@ CSV_OUT_mhcld_puf_FILE <- paste(working_directory,  "/processed_data/", Rdata_ba
 #| warning: false
 
 df_censusTracts <- data.table(read.csv(CSV_IN_censusTracts_FILE, stringsAsFactors = TRUE)) 
-df_OverallIndex <- data.table(read.csv(CSV_IN_OverallIndex_FILE, stringsAsFactors = TRUE)) 
-df_OppLevel <- data.table(read.csv(CSV_IN_OppLevel_FILE, stringsAsFactors = TRUE)) 
+#df_OverallIndex <- data.table(read.csv(CSV_IN_OverallIndex_FILE, stringsAsFactors = TRUE)) 
+#Qdf_OppLevel <- data.table(read.csv(CSV_IN_OppLevel_FILE, stringsAsFactors = TRUE)) 
 
-load(Rdata_IN_mhcld_puf_FILE) ## loads dataframe "MHCLD_PUF_2023"
-df_mhcld_puf <- data.table(MHCLD_PUF_2023)
-rm(MHCLD_PUF_2023)
-gc()
+#load(Rdata_IN_mhcld_puf_FILE) ## loads dataframe "MHCLD_PUF_2023"
+#df_mhcld_puf <- data.table(MHCLD_PUF_2023)
+#rm(MHCLD_PUF_2023)
+#gc()
+```
+
+```{r}
+df_censusTracts_aggregated <- df_censusTracts %>% select(county_fips,year,pop,r_COI_nat) %>% group_by(county_fips,year) %>% summarize(pop = sum(pop),r_COI_nat=mean(r_COI_nat))
 
 
+df_censusTracts_aggregated$county_name <- df_censusTracts$county_name[
+  match(df_censusTracts_aggregated$county_fips, df_censusTracts$county_fips)
+]
+
+df_censusTracts_aggregated$state_name <- df_censusTracts$state_name[
+  match(df_censusTracts_aggregated$county_fips, df_censusTracts$county_fips)
+]
+
+df_censusTracts_aggregated <- drop_na(df_censusTracts_aggregated)
+
+summary(df_censusTracts_aggregated)
+```
+
+```{r}
+# Create the histogram for r_COI_nat
+ggplot(df_censusTracts_aggregated, aes(x = r_COI_nat)) +
+  geom_histogram(fill = "skyblue", color = "black") +
+  labs(title = "Histogram of r_COI_nat",
+       x = "Value",
+       y = "Frequency") +
+  theme_minimal()
+
+ggplot(df_censusTracts_aggregated, aes(x = pop)) +
+  geom_histogram(fill = "pink", color = "black") +
+  labs(title = "Histogram of Population",
+       x = "Value",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+The data from diversitydatakids.org is contains a series of different indices, and does not provide the raw data that was used in the index calculation. The indices are normalized across different areas, like education or housing. We will pull from a few other datasets to see if factors calculated / assessed by those datasets influence the COI.
+
+These datasets inlclude the Urban Influence Codes from USDA, Census Data as part of the American Community Survey, and the 2025 County Health Rankings Data. Select variables will be appended via a left_join by County FIPS codes.
+
+```{r}
+# appending additional data
+
+#Urban Influence Codes
+data1 <- read_excel("data_raw/UrbanInfluenceCodes2024.xlsx", sheet = "Urban Influence Codes 2024")
+data1 <- data1 %>% select(FIPS,UIC_2024)
+data1 <- data1 %>% rename(county_fips = FIPS)
+data1$county_fips <- data1$county_fips %>% as.integer()
+
+#census_api_key("901ef7a5f2d76da48c4fe40cdef7fc2c9ad82d00", install = TRUE)
+#readRenviron("~/.Renviron")  # Reload your environment so the key is available
+
+#Census Data
+income_data <- get_acs(
+  geography = "county",
+  variables = "B19013_001",  # Median household income
+  year = 2022,
+  survey = "acs5"
+)
+income_data$county_fips <- income_data$GEOID %>% as.integer()
+income_data <- income_data %>% rename(median_household_income = estimate)
+income_data <- income_data %>% select(county_fips,median_household_income)
+
+#2025 County Health Rankings Data
+data2 <- read_excel("data_raw/2025 County Health Rankings Data - v3.xlsx", sheet = "Select Measure Data")
+
+data2_consolidated <- data2 %>% select(
+  FIPS,
+  avenum_phys_unhealthydays="Average Number of Physically Unhealthy Days",
+  percent_lowbirthweight = "% Low Birth Weight",
+  avenum_ment_unhealthydays = "Average Number of Mentally Unhealthy Days",
+  percent_vaccinated= "% Vaccinated",
+  percent_exercise = "% With Access to Exercise Opportunities",
+  pcp_ratio = "Primary Care Physicians Ratio",
+  mhp_ratio = "Mental Health Provider Ratio",
+  dentist_ratio = "Dentist Ratio",
+  percent_uninsured = "% Uninsured",
+  percent_severehousing = "% Severe Housing Problems",
+  percent_broadband = "% Households with Broadband Access",
+  )
+
+data2_consolidated$pcp_ratio <- as.integer(substr(data2_consolidated$pcp_ratio, 1, nchar(data2_consolidated$pcp_ratio) - 2))
+data2_consolidated$mhp_ratio <- as.integer(substr(data2_consolidated$mhp_ratio, 1, nchar(data2_consolidated$mhp_ratio) - 2))
+data2_consolidated$dentist_ratio <- as.integer(substr(data2_consolidated$dentist_ratio, 1, nchar(data2_consolidated$dentist_ratio) - 2))
+data2_consolidated$FIPS <- data2_consolidated$FIPS %>% as.integer()
+data2_consolidated <- data2_consolidated %>% rename(county_fips = FIPS)
+
+data3 <- read_excel("data_raw/2025 County Health Rankings Data - v3.xlsx", sheet = "Additional Measure Data")
+
+data3_consolidated <- data3 %>% select(
+  FIPS,
+  life_expectancy = "Life Expectancy",
+  percent_adultdiabetes = "% Adults with Diabetes",
+  percent_limitedhealthyfood = "% Limited Access to Healthy Foods",
+  percent_insufficientsleep = "% Insufficient Sleep",
+  percent_reducedlunch = "% Enrolled in Free or Reduced Lunch"
+)
+
+data3_consolidated$FIPS <- data3_consolidated$FIPS %>% as.integer()
+data3_consolidated <- data3_consolidated %>% rename(county_fips = FIPS)
+
+#Appending all together
+df_newDataset <- drop_na(left_join(df_censusTracts_aggregated,data1,by="county_fips"))
+df_newDataset <- drop_na(left_join(df_newDataset,income_data,by="county_fips"))
+df_newDataset <- drop_na(left_join(df_newDataset,data2_consolidated,by="county_fips"))
+df_newDataset <- drop_na(left_join(df_newDataset,data3_consolidated,by="county_fips"))
+
+df_newDataset <- df_newDataset %>% select(-county_name)
+df_newDataset <- df_newDataset %>% select(-state_name)
+```
+
+```{r}
+summary(df_newDataset)
+
+
+cormat<-df_newDataset%>%select_if(is.numeric)%>%cor()
+corrplot(cormat, type="upper",diag=FALSE, tl.cex=1.2)
+
+```
+
+# Modeling
+
+## Linear Regression
+
+```{r}
+
+#BEFORE DOING MODELING... NEED TO ADDRESS YEAR???
+
+m1<-lm(r_COI_nat~.,data=df_newDataset)
+summary(m1)
+
+```
+
+## Split data into training and testing
+
+```{r}
+set.seed(123, sample.kind = "Rejection")
+spl = sample(nrow(df_newDataset),0.8*nrow(df_newDataset))
+train.RF = df_newDataset[spl,]
+test.RF = df_newDataset[-spl,]
+```
+
+## Regression Tree
+
+```{r}
+regTree = rpart(r_COI_nat ~ ., data = train.RF, method = "anova",
+                minbucket = 300, cp = 0.005)
+
+rpart.plot(regTree, digits=-2)
+```
+
+## Random Forest
+
+```{r}
+rf1 = randomForest(r_COI_nat~.,data=train.RF,ntree=100,nodesize=50,mtry=7)
+```
+
+```{r}
+plot(rf1)
+```
+
+```{r}
+x = train.RF[,-4] 
+
+y = train.RF$r_COI_nat
+
+tuneRF(x, y, mtryStart = 4, stepFactor = 2, ntreeTry=50, nodesize=50, improve=0.01)
+
+```
+
+Optimal mtry is 16
+
+```{r}
+rf2 = randomForest(r_COI_nat~. -median_household_income -avenum_phys_unhealthydays -life_expectancy,
+                   data=train.RF,ntree=100,nodesize=50,mtry=16)
+```
+
+```{r}
+varImpPlot(rf2)
+```
+
+Average number of unhealthy days has the highest impact on inceasing node purity, followed by median household income, and percent reduced lunch.
+
+```{r}
+#Predictions for the Random Forest
+meanCOI = mean(train.RF$r_COI_nat)
+pred_rf = predict(rf2, newdata=test.RF)
+SSE_rf = sum((test.RF$r_COI_nat - pred_rf)^2)
+SST_rf = sum((test.RF$r_COI_nat - meanCOI)^2)
+OSR_rf = 1 - SSE_rf/SST_rf
+OSR_rf
+```
+
+Comparison to Regression Tree
+
+```{r}
+# Predictions from Regression Tree
+pred = predict(regTree, newdata=test.RF)
+SSE = sum((test.RF$r_COI_nat - pred)^2)
+SST = sum((test.RF$r_COI_nat - COI)^2)
+OSR2 = 1 - SSE/SST
+OSR2
+```
+
+```{r}
+#% Improvement with random forest
+OSR2_rf/OSR2  -  1 
+```
+
+30% improvement in model performance by using random forest
+
+## Artificial Neural Network
+## Artificial Neural Network
+
+```{r}
+train.ANN = df_newDataset2[spl,]
+test.ANN = df_newDataset2[-spl,]
+```
+
+Pre-processing data by scaling it to between 0 and 1:
+
+```{r}
+maxVals = apply(train.ANN, 2, max)
+minVals = apply(train.ANN, 2, min)
+```
+
+```{r}
+scaled_train = as.data.frame(scale(train.ANN, center = minVals, 
+                                scale = maxVals - minVals))
+scaled_test = as.data.frame(scale(test.ANN, center = minVals, 
+                                     scale = maxVals - minVals))
+```
+
+```{r}
+# No Hidden Layer
+neuralzero = neuralnet(r_COI_nat~., data= scaled_train, hidden=0,linear.output=TRUE, threshold=0.01, stepmax=20000, lifesign='full', lifesign.step=500)
+
+str(neuralzero)
+
+summary(neuralzero)
+plot(neuralzero)
+```
+
+
+```{r}
+# One Hidden Layer
+neuralone = neuralnet(r_COI_nat~., data= scaled_train, hidden = 1, linear.output=TRUE, threshold=0.01, stepmax=15000, lifesign='full', lifesign.step=500)
+summary(neuralone)
+plot(neuralone)
+```
+
+Calculating OSR2
+
+```{r}
+#Neural Zero
+neuralzero.test = predict(neuralzero, newdata=scaled_test)
+neuralone.test = predict(neuralone,newdata=scaled_test)
+summary(neuralzero.test)
+
+m = min(train.ANN$r_COI_nat)
+M = max(train.ANN$r_COI_nat)
+
+neuralzeropred.nn = (neuralzero.test * (M - m)) + m
+neuralonepred.nn= (neuralone.test * (M - m)) + m
+
+summary(neuralzeropred.nn)
+
+train.mean = mean(train.ANN$r_COI_nat)
+SSE.test_zero = sum((neuralzeropred.nn - test.ANN$r_COI_nat)^2)
+SSE.test_one = sum((neuralonepred.nn - test.ANN$r_COI_nat)^2)
+
+SST.test = sum((train.mean - test.ANN$r_COI_nat)^2)
+
+OSR2_zero <- 1 - SSE.test_zero/SST.test
+OSR2_one <- 1 - SSE.test_one/SST.test
+
+cat("\n \n OSR2 for the Zero Hidden Layer NN is: \n")
+OSR2_zero
+
+cat("\n \n OSR2 for the One Hidden Layer NN is: \n")
+OSR2_one
+
+
+
+# References
+
+https://www.diversitydatakids.org/research-library/child-opportunity-index-30-2023-county-data
+
+https://www.diversitydatakids.org/research-library/research-brief/what-child-opportunity
+
+<https://www.ers.usda.gov/data-products/urban-influence-codes>
+
+# ZZ-Archive... Remove prior to submission???
+
+```{r}
 #
 ## Combine  county level data
 #
 df <- df_censusTracts
 df <- merge(df, df_OverallIndex, by.x = "county_fips", by.y = "county_fips")
+
+
 df <- merge(df, df_OppLevel, by.x = "county_fips", by.y = "county_fips") ## Error: vector memory limit of 16.0 Gb reached, see mem.maxVSize()
 df <- merge(df, df_mhcld_puf, by.x = "county_fips", by.y = "county_fips")
 df_allJoined <- df ## Save the state of the merged data frame before manipulation
@@ -146,16 +451,6 @@ Cols2Factors <- names(df)[sapply(df, is.character)]
 df[Cols2Factors] <- lapply(df[Cols2Factors], function(x) as.integer(as.factor(x)))
 
 
-
-
 ```
 
-
-# References
-
-
-https://www.diversitydatakids.org/research-library/child-opportunity-index-30-2023-county-data
-
-
-https://www.diversitydatakids.org/research-library/research-brief/what-child-opportunity
-
+# 
