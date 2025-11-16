@@ -1,0 +1,650 @@
+---
+title: "County Based Opportunites for Children"
+subtitle: "BQOM 2578 | Data Mining | Homework 6 Unsupervised Learning"
+date: "11/23/2025"
+date-format: "full"
+author: "Group 8: Anthony Pulleo, Hannah Shernisky, Theresa Wohlever"
+editor: source
+format:
+  pdf:
+    toc: true
+    toc-depth: 2
+    number-sections: false
+    mainfont: "Georgia"
+    sansfont: "Avenir"
+    monofont: "Menlo"
+    monofontoptions: "Scale=0.6"
+    mathfont: "STIX Two Math"
+    pdf-engine: xelatex
+---
+# DELETE ME | Instructions
+Cluster Analysis is a very common tool and you may want to apply it to your final project dataset for this assignment if it has metric / continuous data.  If your final project is primarily categorical data, please select a different dataset with continuous / metric data for this assignment.  
+
+Objective:  Apply unsupervised learning to a dataset of your choice.
+
+Steps:
+
+Briefly explain / introduce your the dataset (even if you explained it in prior assignments) and what you hope to get from unsupervised learning analysis of this dataset.
+1. Provide an Exploratory Analysis: summary statistics and scatterplots/histograms for example.
+2. Explain your Cluster Model Selection - for example, Cluster size
+Provide a Cluster visualization and interpretation.
+Be sure to NOT JUST GIVE A TECHNICAL interpretation; how would you interpret / describe the different clusters and what insight do you get from them from your analysis?
+Submission format: From your QUARTO file, render either a PDF or MS Word Document (*.docx) document that covers the assignment and it should include the R code, the output and your text description, explanation, analysis, and interpretation.  The first page must include an executive summary on the points of the assignment - without an executive summary, your submission will not be graded. Only one submission is required by the team.  Do not exceed 30 pages.
+
+HW6 Submission Link: https://canvas.pitt.edu/courses/324587/assignments/1871895 
+
+# Executive Summary
+
+1. With the intention of predicting the Child Opportunity Index (COI), a resource quality measure for healthy development of children our full dataset is aggregated from the following sources: 
+    - diversitydatakids.org
+    - Census data
+    - Urban influence codes, and 
+    - 2025 Country Health data 
+2. Using our project data we read in the full dataset, clean, wrangle, then prune. The pruned dataset is refined specifically for Random Forest (RF) and Artificial Neural Network (ANN). For the purpose of this homework, we omitted data exploration topics, covered in the final project. The COI score is continuous, therefore we will use regression models through the course of the homework.
+3. For random forest, we identified an *optimal mtry at 16*. Running this model, we see that the average number of unhealthy days influences the dependent variable most across the trees. Further, an *OSR of 93, represents a 27% increase in model "accuracy"* over a regression tree.
+4. For the neural network, we generated both a zero and one hidden layer model. OSR calculations for both models returned model performance in the *low 80%*. When compared against the Random forest, this is 10-11% less, therefore RF performed better than ANN.
+
+## Group 8: Anthony Pulleo, Hannah Shernisky, Theresa Wohlever
+
+# Data Preparation
+The Child Opportunity Index (COI) measures and maps the quality of resources and conditions like these that matter for children's healthy development in the neighborhoods where they live.
+
+```{r}
+#| label: LoadPackages
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+# Clean up the environment before running
+rm(list = ls())
+
+#Establish Libraries
+library(tidyverse)
+library(corrplot)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(rstudioapi)
+library(data.table)
+
+library(readxl) # Read in Excel Files
+library(tidycensus) # census data
+
+# Neural Network
+library(rpart)
+library(rpart.plot)
+
+# Clustering
+library(randomForest)
+library(neuralnet)
+library(dendextend)
+
+```
+
+
+
+## Importing Data, Cleaning, & Wrangling
+
+```{r}
+#| label: ImportData
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+
+# Enable full team to successfully execute locally 
+get_current_file_path <- function() {
+  if (!is.null(sys.frames()[[1]]$ofile)) return(normalizePath(sys.frames()[[1]]$ofile))
+  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable())
+    return(normalizePath(rstudioapi::getSourceEditorContext()$path))
+  if (requireNamespace("knitr", quietly = TRUE))
+    return(normalizePath(knitr::current_input()))
+  return(getwd())
+}
+
+working_directory <- dirname(get_current_file_path())
+setwd(working_directory)
+
+CSV_base_censusTracts_filename <- "AveChildOppScore_censusTracts_data"
+CSV_IN_censusTracts_FILE <- paste(working_directory, "/data_raw/data_COI/", CSV_base_censusTracts_filename, ".csv", sep = "")
+CSV_OUT_censusTracts_FILE <- paste(working_directory, "/processed_data/", CSV_base_censusTracts_filename, "_processed.csv", sep = "")
+
+df_censusTracts <- data.table(read.csv(CSV_IN_censusTracts_FILE, stringsAsFactors = TRUE)) 
+df_censusTracts_og <- df_censusTracts  
+
+df_urbanInfluence <- read_excel( paste(working_directory, "/data_raw/UrbanInfluenceCodes2024.xlsx", sep = ""), sheet = "Urban Influence Codes 2024")
+df_urbanInfluence_og <- df_urbanInfluence
+
+#
+# 2025 County Health Rankings Data
+#
+df_CountyHealthSelect <- read_excel(paste(working_directory, "/data_raw/2025 County Health Rankings Data - v3.xlsx", sep = ""), sheet = "Select Measure Data")
+df_CountyHealthSelect_og <- df_CountyHealthSelect
+
+df_CountyHealthAddl <- read_excel(paste(working_directory,"/data_raw/2025 County Health Rankings Data - v3.xlsx", sep = ""), skip = 1, sheet = "Additional Measure Data")
+df_CountyHealthAddl_og <- df_CountyHealthAddl
+
+```
+
+```{r}
+#| label: AggregateData
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+df_censusTracts_aggregated <- df_censusTracts %>% select(county_fips,year,pop,r_COI_nat) %>% group_by(county_fips,year) %>% summarize(pop = sum(pop),r_COI_nat=mean(r_COI_nat))
+
+
+df_censusTracts_aggregated$county_name <- df_censusTracts$county_name[
+  match(df_censusTracts_aggregated$county_fips, df_censusTracts$county_fips)
+]
+
+df_censusTracts_aggregated$state_name <- df_censusTracts$state_name[
+  match(df_censusTracts_aggregated$county_fips, df_censusTracts$county_fips)
+]
+
+df_censusTracts_aggregated <- drop_na(df_censusTracts_aggregated)
+
+summary(df_censusTracts_aggregated)
+```
+
+The data from diversitydatakids.org contains a series of indices, and does not provide the raw data that was used in the index calculation. The indices are normalized across different areas, like education or housing. We will pull from other datasets to see if factors calculated / assessed by those datasets influence the COI.
+
+These datasets include the Urban Influence Codes from USDA, Census Data as part of the American Community Survey, and the 2025 County Health Rankings Data. Select variables will be appended via a left_join by County FIPS codes.
+
+```{r}
+#| label: SelectAndJoinData
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+#
+# Urban Influence Codes
+#
+df_urbanInfluence <- df_urbanInfluence_og %>% select(FIPS,UIC_2024,Population_2020)
+df_urbanInfluence$county_fips <- df_urbanInfluence$FIPS %>% as.integer()
+
+
+#
+# Census Data: Median Income
+#
+census_api_key("901ef7a5f2d76da48c4fe40cdef7fc2c9ad82d00", install = TRUE, overwrite=TRUE)
+readRenviron("~/.Renviron")  # Reload R environment so the key is available
+
+df_acs5_income_data <- get_acs(
+  geography = "county",
+  variables = "B19013_001",  # Median household income
+  year = 2022,
+  survey = "acs5"
+)
+df_acs5_income_data$county_fips <- df_acs5_income_data$GEOID %>% as.integer()
+df_acs5_income_data <- df_acs5_income_data %>% rename(median_household_income = estimate)
+df_acs5_income_data <- df_acs5_income_data %>% select(county_fips,median_household_income)
+
+
+
+
+#
+# 2025 County Health Rankings Data
+#
+### SELECT ###
+df_CountyHealthSelect <- df_CountyHealthSelect_og %>% select(
+  FIPS,
+  avenum_phys_unhealthydays="Average Number of Physically Unhealthy Days",
+  percent_lowbirthweight = "% Low Birth Weight",
+  avenum_ment_unhealthydays = "Average Number of Mentally Unhealthy Days",
+  percent_vaccinated= "% Vaccinated",
+  percent_exercise = "% With Access to Exercise Opportunities",
+  pcp_ratio = "Primary Care Physicians Ratio",
+  mhp_ratio = "Mental Health Provider Ratio",
+  dentist_ratio = "Dentist Ratio",
+  percent_uninsured = "% Uninsured",
+  percent_severehousing = "% Severe Housing Problems",
+  percent_broadband = "% Households with Broadband Access",
+  )
+
+
+#
+# Medical Accessibility Measures
+#
+df_CountyHealthSelect$pcp_ratio <- as.integer(
+    substr(df_CountyHealthSelect$pcp_ratio, 1, nchar(df_CountyHealthSelect$pcp_ratio) - 2)
+    )
+df_CountyHealthSelect$mhp_ratio <- as.integer(
+  substr(df_CountyHealthSelect$mhp_ratio, 1, nchar(df_CountyHealthSelect$mhp_ratio) - 2)
+  )
+df_CountyHealthSelect$dentist_ratio <- as.integer(
+    substr(df_CountyHealthSelect$dentist_ratio, 1, nchar(df_CountyHealthSelect$dentist_ratio) - 2)
+    )
+df_CountyHealthSelect$FIPS <- df_CountyHealthSelect$FIPS %>% as.integer()
+df_CountyHealthSelect <- df_CountyHealthSelect %>% rename(county_fips = FIPS)
+
+
+### SELECT ###
+df_CountyHealthAddl <- df_CountyHealthAddl_og %>% select(
+  FIPS,
+  life_expectancy = "Life Expectancy",
+  percent_adultdiabetes = "% Adults with Diabetes",
+  percent_limitedhealthyfood = "% Limited Access to Healthy Foods",
+  percent_insufficientsleep = "% Insufficient Sleep",
+  percent_reducedlunch = "% Enrolled in Free or Reduced Lunch",
+  percent_feelinglonely = "% feeling lonely"
+)
+
+df_CountyHealthAddl$FIPS <- df_CountyHealthAddl$FIPS %>% as.integer()
+df_CountyHealthAddl <- df_CountyHealthAddl %>% rename(county_fips = FIPS)
+
+
+
+#
+# Joining all together
+#
+
+df <- drop_na(left_join(df_censusTracts_aggregated,df_urbanInfluence,by="county_fips"))
+df <- drop_na(left_join(df,df_acs5_income_data,by="county_fips"))
+df <- drop_na(left_join(df,df_CountyHealthSelect,by="county_fips"))
+df <- drop_na(left_join(df,df_CountyHealthAddl,by="county_fips"))
+
+df <- df %>% select(-county_name)
+df <- df %>% select(-state_name)
+
+df_alljoined <- df ## Save joined state 
+
+```
+
+# Data Exploration
+
+Identify dimensions of interest
+```{r}
+#| label: SetSelectCols
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+
+colsOfInterest = c("county_fips",
+  "r_COI_nat",
+  "life_expectancy",
+  "percent_vaccinated",
+  "pop",
+  "median_household_income",
+  "avenum_phys_unhealthydays",
+  "avenum_ment_unhealthydays",
+  "percent_lowbirthweight",
+  "percent_exercise",
+  "pcp_ratio",
+  "dentist_ratio",
+  "mhp_ratio",
+  "percent_uninsured",
+  "percent_severehousing",
+  "percent_broadband",
+  "percent_limitedhealthyfood",
+  "percent_feelinglonely"
+)
+```
+
+```{r}
+#| label: DataExloration
+#| warning: false
+#| echo: true
+#| message: true
+
+df$target <- df$r_COI_nat
+
+##
+## Visualize target values 
+##
+
+# Histogram of target values
+target_density <- density(df$target)
+
+# Convert the density estimate to a function
+dens_func <- approxfun(target_density$x, target_density$y)
+
+# Use optimize() to find the maximum in a specified interval (choose based on your data)
+result <- optimize(dens_func, interval = c(min(df$target), max(df$target)), maximum = TRUE)
+local_max_x <- result$maximum     # The x value where local max occurs
+local_max_y <- result$objective   # The max density value
+
+#  Create density plot with ggplot2 and add vertical line at minimum
+df_density <- data.frame(x = df$target)
+ggplot(df_density, aes(x = df$target)) +
+  geom_density(fill = "lightblue", color = "blue", alpha = 0.5) +
+  geom_vline(xintercept = local_max_x , color = "red", linetype = "dashed", size = 1) +
+  annotate("text", x = local_max_x, y = local_max_y + 0.002, 
+    label = sprintf("Max: %.0f", local_max_x), color = "red", angle = 90, vjust = -1, size = 2) +
+  labs(title = "Density plot of Child Opportunity Index (COI)", x = "County Child Opportunity Index", y = "Density") +
+  coord_cartesian(ylim = c(0, 0.01)) 
+
+
+## Make TARGET binary 
+target_bin_cutoff <- local_max_x
+df$target_bin <- ifelse(df$target < target_bin_cutoff, 0, 1)
+
+
+
+for (col in colsOfInterest) {
+  p <- ggplot(df, aes_string(x = "r_COI_nat", y = col)) +
+    geom_point(size = 2, aes(color = target_bin)) + 
+    labs(x = "COI", y = col) +
+    ggtitle(paste("Scatterplot of", col, "vs r_COI_nat")) +
+    theme_minimal() + 
+    theme(plot.title = element_text(hjust = 0.5))
+  print(p)
+}
+
+
+```
+
+
+# Modeling
+
+## Split data into training and testing
+
+We will deviate slightly from the dataset we will use in our final project for the purpose of this homework. When doing the ANN, we identified a few variables that made the ANN return NaNs, and therefore inhibited our ability to successfully run these models. We will create df in the code below with variables that allow the ANN to work.
+
+```{r}
+#| label: SelectCols
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+df <- df %>% select(colsOfInterest)
+
+set.seed(123, sample.kind = "Rejection")
+spl = sample(nrow(df),0.8*nrow(df))
+train.RF = df[spl,]
+test.RF = df[-spl,]
+
+```
+
+## Regression Tree
+
+```{r}
+#| label: RegTree
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+regTree = rpart(r_COI_nat ~ ., data = train.RF, method = "anova",
+                minbucket = 300, cp = 0.005)
+
+rpart.plot(regTree, digits=-2)
+```
+
+## Random Forest
+
+We will start by creating a random forest with similar parameters called for in class, and then we will identify the best mtry.
+
+```{r}
+#| label: RandomForest
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+rf1 = randomForest(r_COI_nat~.,data=train.RF,ntree=100,nodesize=50,mtry=7)
+plot(rf1)
+
+x = train.RF[,-4] 
+y = train.RF$r_COI_nat
+
+tuneRF(x, y, mtryStart = 4, stepFactor = 2, ntreeTry=50, nodesize=50, improve=0.01)
+```
+
+The lowest Out-of-Bag error from the dataset and model indicates that an optimal mtry is 16, because this represents the lowest error in the model. Despite the step of 2, we are fairly confident there are not further dips in the OOB Error curve, given the gentle descent of the curve.
+
+We will then generate a "final" Random Forest, with the optimal mtry:
+
+```{r}
+#| label: RandomForestFinal
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+rf2 = randomForest(r_COI_nat~.,data=train.RF,ntree=100,nodesize=50,mtry=16)
+plot(rf2)
+varImpPlot(rf2)
+```
+
+Average number of unhealthy days has the highest impact on inceasing node purity, followed by median household income, and life expectancy
+
+```{r}
+#| label: RandomForestPredictions
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+#Predictions for the Random Forest
+meanCOI = mean(train.RF$r_COI_nat)
+pred_rf = predict(rf2, newdata=test.RF)
+SSE_rf = sum((test.RF$r_COI_nat - pred_rf)^2)
+SST_rf = sum((test.RF$r_COI_nat - meanCOI)^2)
+OSR_rf = 1 - SSE_rf/SST_rf
+OSR_rf
+```
+
+Comparison to Regression Tree
+
+```{r}
+#| label: RFvsRT
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+# Predictions from Regression Tree
+pred = predict(regTree, newdata=test.RF)
+SSE = sum((test.RF$r_COI_nat - pred)^2)
+SST = sum((test.RF$r_COI_nat - meanCOI)^2)
+OSR2 = 1 - SSE/SST
+OSR2
+
+
+#% Improvement with random forest
+OSR_rf/OSR2  -  1 
+```
+
+27% improvement in model performance by using random forest
+
+## Artificial Neural Network
+
+```{r}
+#| label: ANN
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+train.ANN = df[spl,]
+test.ANN = df[-spl,]
+
+# Pre-processing data by scaling it to between 0 and 1:
+maxVals = apply(train.ANN, 2, max)
+minVals = apply(train.ANN, 2, min)
+
+scaled_train = as.data.frame(scale(train.ANN, center = minVals, 
+                                scale = maxVals - minVals))
+scaled_test = as.data.frame(scale(test.ANN, center = minVals, 
+                                     scale = maxVals - minVals))
+
+# No Hidden Layer
+neuralzero = neuralnet(r_COI_nat~., 
+                       data= scaled_train, hidden=0,
+                       linear.output=TRUE, threshold=0.01, 
+                       stepmax=20000, lifesign='full', lifesign.step=500)
+
+str(neuralzero)
+
+summary(neuralzero)
+plot(neuralzero)
+
+# One Hidden Layer
+neuralone = neuralnet(r_COI_nat~., data= scaled_train, hidden = 1, linear.output=TRUE, threshold=0.01, stepmax=15000, lifesign='full', lifesign.step=500)
+summary(neuralone)
+plot(neuralone)
+```
+
+
+
+```{r}
+#| label: ANN_Pred
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+
+# Neural Zero
+neuralzero.test = predict(neuralzero, newdata=scaled_test)
+neuralone.test = predict(neuralone,newdata=scaled_test)
+summary(neuralzero.test)
+
+m = min(train.ANN$r_COI_nat)
+M = max(train.ANN$r_COI_nat)
+
+neuralzeropred.nn = (neuralzero.test * (M - m)) + m
+neuralonepred.nn= (neuralone.test * (M - m)) + m
+
+summary(neuralzeropred.nn)
+
+train.mean = mean(train.ANN$r_COI_nat)
+SSE.test_zero = sum((neuralzeropred.nn - test.ANN$r_COI_nat)^2)
+SSE.test_one = sum((neuralonepred.nn - test.ANN$r_COI_nat)^2)
+
+SST.test = sum((train.mean - test.ANN$r_COI_nat)^2)
+
+OSR2_zero <- 1 - SSE.test_zero/SST.test
+OSR2_one <- 1 - SSE.test_one/SST.test
+
+cat("\n \n OSR2 for the Zero Hidden Layer NN is: \n")
+OSR2_zero
+
+cat("\n \n OSR2 for the One Hidden Layer NN is: \n")
+OSR2_one
+
+```
+
+Comparing with the RF performance:
+
+```{r}
+#| label: ANNvsRTF
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+best_nn_OCR = max(OSR2_one,OSR2_zero)
+
+OSR_rf - best_nn_OCR
+```
+
+The Random Forest Performs approximately 11% better than the neural network performed. This may be attributable to the fact that the Neural Network as defined above is not fully optimized (as more nodes and layers may have a positive benefit on the overall performance of the model).
+
+
+# Unsupervised Learning
+
+
+```{r}
+#| label: kmeans_jambuelbow
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+# JAMBU ELBOW
+iss <- function(k) {
+  kmeans(df[,3:5],k,iter.max=100,nstart=100,algorithm="Lloyd" )$tot.withinss
+}
+
+k.values <- 1:10
+iss_values <- map_dbl(k.values, iss)
+
+plot(k.values, iss_values,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total intra-clusters sum of squares")
+```
+
+```{r}
+#| label: kmeans_totalss
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+
+total_ss <- sum((df[,3:5] - colMeans(df[,3:5]))^2)
+
+
+iss <- function(k) {
+  wss <- kmeans(df[,3:5], k, iter.max=100, nstart=100, algorithm="Lloyd")$tot.withinss
+  return(1 - wss / total_ss)
+}
+
+# Rest of the code remains similar
+k.values <- 1:10
+perc_variance <- map_dbl(k.values, iss)
+
+plot(k.values, perc_variance,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Percentage of Variance Explained")
+```
+
+
+```{r}
+#| label: kmeans_fiveClusters
+#| echo: false
+#| message: false
+#| results: 'hide'
+#| warning: false
+
+set.seed(1234)
+k5<-kmeans(df[,c(3:5)],5,iter.max=100,nstart=50)
+df$ClusterNumber <- k5$cluster
+
+#
+# TO DO
+# NEEDS TO BE UPDATED
+#
+
+```
+ggplot(df,aes(x=Age,y=SpendingScore,color=as.factor(ClusterNumber)))+geom_point(size=2)+
+       labs(x = "Age", y = "Spending Score (1 to 100)") +
+  ggtitle("Scatterplot") + theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+#  scale_color_manual(values = c("0" = "white", "1" = "lightblue")) 
+
+
+ggplot(df,aes(x=AnnualIncomek,y=SpendingScore,color=as.factor(ClusterNumber)))+geom_point(size=2)+
+       labs(x = "Annual Income in thousands of dollars", y = "Spending Score (1 to 100)") +
+  ggtitle("Scatterplot") + theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+#  scale_color_manual(values = c("0" = "white", "1" = "lightblue")) 
+
+ggplot(df,aes(x=Age,y=AnnualIncomek,color=as.factor(ClusterNumber)))+geom_point(size=2)+
+       labs(x = "Age", y = "Annual Income in thousands of dollars") +
+  ggtitle("Scatterplot") + theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+# References
+
+https://www.diversitydatakids.org/research-library/child-opportunity-index-30-2023-county-data
+
+https://www.diversitydatakids.org/research-library/research-brief/what-child-opportunity
+
+https://www.ers.usda.gov/data-products/urban-influence-codes
+
+

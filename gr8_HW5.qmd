@@ -29,6 +29,7 @@ format:
 3. For random forest, we identified an *optimal mtry at 16*. Running this model, we see that the average number of unhealthy days influences the dependent variable most across the trees. Further, an *OSR of 93, represents a 27% increase in model "accuracy"* over a regression tree.
 4. For the neural network, we generated both a zero and one hidden layer model. OSR calculations for both models returned model performance in the *low 80%*. When compared against the Random forest, this is 10-11% less, therefore RF performed better than ANN.
 
+**Group 8: Anthony Pulleo, Hannah Shernisky, Theresa Wohlever**
 
 # Data Preparation
 The Child Opportunity Index (COI) measures and maps the quality of resources and conditions like these that matter for children's healthy development in the neighborhoods where they live.
