@@ -68,6 +68,7 @@ library(ggplot2)
 library(rstudioapi)
 library(data.table)
 
+library(GGally) ## ggpairs Function
 library(readxl) # Read in Excel Files
 library(tidycensus) # census data
 
@@ -79,6 +80,27 @@ library(rpart.plot)
 library(randomForest)
 library(neuralnet)
 library(dendextend)
+
+# Find Plot asymptote
+library(SDLfilter)
+
+
+#
+# GLOBALS
+#
+
+seed_this <- sample(42:31337, 1)
+
+#
+# Aggregate model stats
+#
+
+df_modelCompare <- data.frame(
+  Model = c("Linear Regression", "Regression Tree", "Random Forest",  "Artificial Neural Network ONE", "Artificial Neural Network ZERO"),
+  OSR2_Phase3Report = c(0.869, 0.757, 0.961, 0.822, NA),
+  OSR2_this = c(NA, NA, NA, NA, NA),
+  seed_this = c(NA, NA, NA, seed_this, seed_this)
+)
 
 ```
 
@@ -94,7 +116,7 @@ library(dendextend)
 #| warning: false
 
 
-# Enable full team to successfully execute locally 
+# Enable team members to successfully execute locally 
 get_current_file_path <- function() {
   if (!is.null(sys.frames()[[1]]$ofile)) return(normalizePath(sys.frames()[[1]]$ofile))
   if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable())
@@ -123,7 +145,7 @@ df_urbanInfluence_og <- df_urbanInfluence
 df_CountyHealthSelect <- read_excel(paste(working_directory, "/data_raw/2025 County Health Rankings Data - v3.xlsx", sep = ""), sheet = "Select Measure Data")
 df_CountyHealthSelect_og <- df_CountyHealthSelect
 
-df_CountyHealthAddl <- read_excel(paste(working_directory,"/data_raw/2025 County Health Rankings Data - v3.xlsx", sep = ""), skip = 1, sheet = "Additional Measure Data")
+df_CountyHealthAddl <- read_excel(paste(working_directory,"/data_raw/2025 County Health Rankings Data - v3.xlsx", sep = ""),  sheet = "Additional Measure Data") #skip = 1,
 df_CountyHealthAddl_og <- df_CountyHealthAddl
 
 ```
@@ -286,13 +308,28 @@ colsOfInterest = c("county_fips",
   "percent_limitedhealthyfood",
   "percent_feelinglonely"
 )
+
+colsOfInterest_scatter = c(
+  "life_expectancy",
+  "percent_vaccinated",
+  "median_household_income",
+  "avenum_phys_unhealthydays",
+  "avenum_ment_unhealthydays",
+  "pcp_ratio",
+  "mhp_ratio",
+  "percent_uninsured",
+  "percent_severehousing",
+  "percent_broadband",
+  "percent_limitedhealthyfood",
+  "percent_feelinglonely"
+)
 ```
 
 ```{r}
 #| label: DataExloration
 #| warning: false
 #| echo: true
-#| message: true
+#| message: false
 
 df$target <- df$r_COI_nat
 
@@ -311,15 +348,14 @@ result <- optimize(dens_func, interval = c(min(df$target), max(df$target)), maxi
 local_max_x <- result$maximum     # The x value where local max occurs
 local_max_y <- result$objective   # The max density value
 
-#  Create density plot with ggplot2 and add vertical line at minimum
+#  Create density plot with ggplot2 and add vertical line at max
 df_density <- data.frame(x = df$target)
 ggplot(df_density, aes(x = df$target)) +
   geom_density(fill = "lightblue", color = "blue", alpha = 0.5) +
   geom_vline(xintercept = local_max_x , color = "red", linetype = "dashed", size = 1) +
   annotate("text", x = local_max_x, y = local_max_y + 0.002, 
     label = sprintf("Max: %.0f", local_max_x), color = "red", angle = 90, vjust = -1, size = 2) +
-  labs(title = "Density plot of Child Opportunity Index (COI)", x = "County Child Opportunity Index", y = "Density") +
-  coord_cartesian(ylim = c(0, 0.01)) 
+  labs(title = "Density plot of Child Opportunity Index (COI)", x = "County Child Opportunity Index", y = "Density")
 
 
 ## Make TARGET binary 
@@ -327,20 +363,24 @@ target_bin_cutoff <- local_max_x
 df$target_bin <- ifelse(df$target < target_bin_cutoff, 0, 1)
 
 
+scatter_plot_matrix <- ggpairs(
+  df[ , colsOfInterest_scatter],
+  aes(color = df$target_bin),
+  upper = list(continuous = "points"),
+  lower = list(continuous = "points"),
+  diag  = list(continuous = "densityDiag")
+) + 
+  theme_minimal() 
 
-for (col in colsOfInterest) {
-  p <- ggplot(df, aes_string(x = "r_COI_nat", y = col)) +
-    geom_point(size = 2, aes(color = target_bin)) + 
-    labs(x = "COI", y = col) +
-    ggtitle(paste("Scatterplot of", col, "vs r_COI_nat")) +
-    theme_minimal() + 
-    theme(plot.title = element_text(hjust = 0.5))
-  print(p)
-}
+print(scatter_plot_matrix)
 
+
+df_wTarget <- df
+
+df$target_bin <- NULL
+df$target <- NULL
 
 ```
-
 
 # Modeling
 
@@ -357,7 +397,7 @@ We will deviate slightly from the dataset we will use in our final project for t
 
 df <- df %>% select(colsOfInterest)
 
-set.seed(123, sample.kind = "Rejection")
+set.seed(seed_this, sample.kind = "Rejection")
 spl = sample(nrow(df),0.8*nrow(df))
 train.RF = df[spl,]
 test.RF = df[-spl,]
@@ -373,8 +413,11 @@ test.RF = df[-spl,]
 #| results: 'hide'
 #| warning: false
 
-regTree = rpart(r_COI_nat ~ ., data = train.RF, method = "anova",
-                minbucket = 300, cp = 0.005)
+regTree = rpart(r_COI_nat ~ ., 
+                data = train.RF, 
+                method = "anova",
+                minbucket = 300, 
+                cp = 0.005)
 
 rpart.plot(regTree, digits=-2)
 ```
@@ -431,6 +474,9 @@ SSE_rf = sum((test.RF$r_COI_nat - pred_rf)^2)
 SST_rf = sum((test.RF$r_COI_nat - meanCOI)^2)
 OSR_rf = 1 - SSE_rf/SST_rf
 OSR_rf
+
+df_modelCompare$OSR2_this[ df_modelCompare$Model == "Random Forest"] <- OSR_rf
+
 ```
 
 Comparison to Regression Tree
@@ -449,12 +495,19 @@ SST = sum((test.RF$r_COI_nat - meanCOI)^2)
 OSR2 = 1 - SSE/SST
 OSR2
 
+df_modelCompare$OSR2_this[ df_modelCompare$Model == "Regression Tree"] <- OSR2
 
 #% Improvement with random forest
-OSR_rf/OSR2  -  1 
+RFImprovement <- OSR_rf/OSR2  -  1 
+
+print(
+  paste(
+    round(100*RFImprovement, digits = 0),
+    "% improvement in model performancewith Random Forest over Regression Tree.")
+)
 ```
 
-27% improvement in model performance by using random forest
+
 
 ## Artificial Neural Network
 
@@ -464,31 +517,62 @@ OSR_rf/OSR2  -  1
 #| message: false
 #| results: 'hide'
 #| warning: false
+#| fig-width: 10
+#| fig-height: 10
+
+
 train.ANN = df[spl,]
 test.ANN = df[-spl,]
 
-# Pre-processing data by scaling it to between 0 and 1:
-maxVals = apply(train.ANN, 2, max)
-minVals = apply(train.ANN, 2, min)
 
-scaled_train = as.data.frame(scale(train.ANN, center = minVals, 
-                                scale = maxVals - minVals))
-scaled_test = as.data.frame(scale(test.ANN, center = minVals, 
-                                     scale = maxVals - minVals))
+# Protect scaling from zero range; remove constant columns
+maxVals <- apply(train.ANN, 2, max, na.rm = TRUE)
+minVals <- apply(train.ANN, 2, min, na.rm = TRUE)
+rangeVals <- pmax(maxVals - minVals, 1e-9)  # avoid zero
+
+scaled_train <- as.data.frame(scale(train.ANN, center = minVals, scale = rangeVals))
+scaled_test  <- as.data.frame(scale(test.ANN,  center = minVals, scale = rangeVals))
+
+# Drop constant predictors before scaling
+const_cols <- which(maxVals == minVals)
+if (length(const_cols) > 0) {
+  train.ANN <- train.ANN[ , -const_cols, drop = FALSE]
+  test.ANN  <- test.ANN[ , -const_cols, drop = FALSE]
+}
+
 
 # No Hidden Layer
-neuralzero = neuralnet(r_COI_nat~., 
-                       data= scaled_train, hidden=0,
-                       linear.output=TRUE, threshold=0.01, 
-                       stepmax=20000, lifesign='full', lifesign.step=500)
+neuralzero <- neuralnet(
+  r_COI_nat ~ .,
+  data          = scaled_train,
+  hidden        = 0,
+  linear.output = TRUE,
+  threshold     = 0.01,
+  stepmax       = 20000,
+  lifesign      = "full",
+  lifesign.step = 500
+)
+
+
+# plot(neuralzero)
+# Plotting commented out due to error:
+## Error in grid.Call.graphics(C_setviewport, vp, TRUE) : 
+##  non-finite location and/or size for viewport
 
 str(neuralzero)
-
 summary(neuralzero)
-plot(neuralzero)
+
 
 # One Hidden Layer
-neuralone = neuralnet(r_COI_nat~., data= scaled_train, hidden = 1, linear.output=TRUE, threshold=0.01, stepmax=15000, lifesign='full', lifesign.step=500)
+neuralone = neuralnet(r_COI_nat~., 
+  data= scaled_train, 
+  hidden = 1, 
+  linear.output=TRUE, 
+  threshold=0.01, 
+  stepmax=15000, 
+  lifesign='full', 
+  lifesign.step=500
+)
 summary(neuralone)
 plot(neuralone)
 ```
@@ -531,6 +615,12 @@ OSR2_zero
 cat("\n \n OSR2 for the One Hidden Layer NN is: \n")
 OSR2_one
 
+
+## "Linear Regression", "Regression Tree", "Random Forest",  "Artificial Neural Network ONE", "Artificial Neural Network ZERO"
+df_modelCompare$OSR2_this[ df_modelCompare$Model == "Artificial Neural Network ONE"] <- OSR2_one
+df_modelCompare$OSR2_this[ df_modelCompare$Model == "Artificial Neural Network ZERO"] <- OSR2_zero
+
+
 ```
 
 Comparing with the RF performance:
@@ -551,18 +641,31 @@ The Random Forest Performs approximately 11% better than the neural network perf
 
 
 # Unsupervised Learning
-
-
 ```{r}
-#| label: kmeans_jambuelbow
+#| label: cluster_prep
 #| echo: false
 #| message: false
 #| results: 'hide'
 #| warning: false
 
+df_cluster <- df %>% select(-r_COI_nat)
+
+```
+
+```{r}
+#| label: kmeans_jambuelbow
+#| echo: true
+#| message: true
+#| results: 'markup'
+#| warning: true
+
 # JAMBU ELBOW
 iss <- function(k) {
-  kmeans(df[,3:5],k,iter.max=100,nstart=100,algorithm="Lloyd" )$tot.withinss
+  kmeans(df_cluster,
+         centers = k,
+         iter.max=100,
+         nstart=100,
+         algorithm="Lloyd" )$tot.withinss
 }
 
 k.values <- 1:10
@@ -576,67 +679,91 @@ plot(k.values, iss_values,
 
 ```{r}
 #| label: kmeans_totalss
-#| echo: false
-#| message: false
-#| results: 'hide'
+#| echo: true
+#| message: true
+#| results: 'markup'
 #| warning: false
 
-
-total_ss <- sum((df[,3:5] - colMeans(df[,3:5]))^2)
-
+total_ss <- sum((df_cluster- colMeans(df_cluster))^2)
 
 iss <- function(k) {
-  wss <- kmeans(df[,3:5], k, iter.max=100, nstart=100, algorithm="Lloyd")$tot.withinss
+  wss <- kmeans(df_cluster, 
+         centers = k, 
+         iter.max=100, 
+         nstart=100, 
+         algorithm="Lloyd")$tot.withinss
   return(1 - wss / total_ss)
 }
 
-# Rest of the code remains similar
 k.values <- 1:10
 perc_variance <- map_dbl(k.values, iss)
+```
+
+
+```{r}
+#| label: kmeans_kpop
+#| echo: true
+#| message: true
+#| results: 'markup'
+#| warning: false
+
+
+k_pop_asymptote_hunter <- asymptote(
+  x = k.values,
+  y = perc_variance,
+  degree = "optim",
+  upper.degree = 5,
+  threshold = 0.95,  # Once y reaches 95% of asymptote
+  proportional = TRUE,
+  estimator = "glm",
+  ci.level = NULL # We don't need confidence intervals - prevent ERROR: object 'y_lwr' not found
+)
+
+k_pop_asymptote_hunter
+
 
 plot(k.values, perc_variance,
      type="b", pch = 19, frame = FALSE, 
      xlab="Number of clusters K",
      ylab="Percentage of Variance Explained")
+abline(h = k_pop_asymptote_hunter$h.asymptote, col = "blue", lwd = 2)
+abline(v = k_pop_asymptote_hunter$min.n, col = "blue", lwd = 2)
+
+k_pop_best_K <- k_pop_asymptote_hunter$min.n
+
 ```
 
 
 ```{r}
-#| label: kmeans_fiveClusters
-#| echo: false
-#| message: false
-#| results: 'hide'
-#| warning: false
+#| label: kmeans_optimizedClusters
+#| echo: true
+#| message: true
+#| results: 'markup'
+#| warning: true
 
-set.seed(1234)
-k5<-kmeans(df[,c(3:5)],5,iter.max=100,nstart=50)
-df$ClusterNumber <- k5$cluster
 
-#
-# TO DO
-# NEEDS TO BE UPDATED
-#
+set.seed(seed_this)
+Kpop <- kmeans(df_cluster, k_pop_best_K, iter.max=100, nstart=50)
+df$ClusterNumber <- Kpop$cluster
+
+
+for(col in colsOfInterest_scatter) {
+  # Use aes_string or .data pronoun for dynamic column selection
+  p <- ggplot(df, aes(x=r_COI_nat, y=.data[[col]], 
+                      color=as.factor(ClusterNumber))) +
+    geom_point(size=2) +
+    labs(x = "COI", y = col, color = "Cluster") +
+    ggtitle(paste("Scatterplot:", col, "vs. COI")) + 
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  print(p)
+  
+}
+
+ 
 
 ```
-ggplot(df,aes(x=Age,y=SpendingScore,color=as.factor(ClusterNumber)))+geom_point(size=2)+
-       labs(x = "Age", y = "Spending Score (1 to 100)") +
-  ggtitle("Scatterplot") + theme_minimal()+
-  theme(plot.title = element_text(hjust = 0.5))
-#  scale_color_manual(values = c("0" = "white", "1" = "lightblue")) 
-
-
-ggplot(df,aes(x=AnnualIncomek,y=SpendingScore,color=as.factor(ClusterNumber)))+geom_point(size=2)+
-       labs(x = "Annual Income in thousands of dollars", y = "Spending Score (1 to 100)") +
-  ggtitle("Scatterplot") + theme_minimal()+
-  theme(plot.title = element_text(hjust = 0.5))
-#  scale_color_manual(values = c("0" = "white", "1" = "lightblue")) 
-
-ggplot(df,aes(x=Age,y=AnnualIncomek,color=as.factor(ClusterNumber)))+geom_point(size=2)+
-       labs(x = "Age", y = "Annual Income in thousands of dollars") +
-  ggtitle("Scatterplot") + theme_minimal()+
-  theme(plot.title = element_text(hjust = 0.5))
-
-
 
 
 # References
